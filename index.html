@@ -87,7 +87,7 @@
 
         port.readable.pipeTo(decoder.writable).catch(()=>{});
         const inputStream = decoder.readable.pipeThrough(lineSplitter);
-        reader = inputStream.getReader({ signal: readLoopCancel.signal });s
+        reader = inputStream.getReader({ signal: readLoopCancel.signal });
 
         // Start read loop
         (async () => {
