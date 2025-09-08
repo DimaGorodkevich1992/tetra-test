@@ -1,76 +1,165 @@
 <!doctype html>
 <html lang="en">
-<meta charset="utf-8">
-<title>Serial Connect Demo</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 20px; }
-  #log { margin-top: 1em; padding: 0.5em; border: 1px solid #ccc; min-height: 6em; white-space: pre-wrap; }
-  button { margin-right: 0.5em; }
-</style>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pico Serial Console</title>
+  <style>
+    body { font: 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 20px; }
+    button { margin: 4px; padding: 8px 12px; }
+    textarea { width: 100%; height: 220px; }
+    input[type="text"] { width: 100%; }
+    .row { margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <h1>Web Serial → Pico</h1>
 
-<h1>Serial Connect Demo</h1>
-<p>
-  <button id="btnConnect">Connect</button>
-  <button id="btnDisconnect" disabled>Disconnect</button>
-</p>
-<div id="log"></div>
+  <div class="row">
+    <button id="connectBtn">Connect</button>
+    <button id="disconnectBtn" disabled>Disconnect</button>
+  </div>
 
-<script>
-let port, reader;
+  <div class="row">
+    <label>JSON to send:</label>
+    <input id="jsonInput" type="text" value='{"cmd":"ping"}' />
+    <button id="sendBtn" disabled>Send JSON</button>
+  </div>
 
-const logEl = document.getElementById('log');
-function log(msg){ logEl.textContent += msg + "\n"; logEl.scrollTop = logEl.scrollHeight; }
+  <div class="row">
+    <button id="interruptBtn" disabled>Send Ctrl-C (interrupt)</button>
+    <button id="softResetBtn" disabled>Soft reboot (Ctrl-D)</button>
+  </div>
 
-document.getElementById('btnConnect').onclick = async () => {
-  if (!("serial" in navigator)) {
-    alert("Your browser does not support Web Serial API (use Chrome/Edge/Opera).");
-    return;
-  }
-  try {
-    // Ask the user to select a port
-    port = await navigator.serial.requestPort();
-    await port.open({ baudRate: 115200 }); // change to your baud rate
-    log("Port opened.");
+  <div class="row">
+    <label>Log:</label>
+    <textarea id="log" readonly></textarea>
+  </div>
 
-    // Read loop
-    const decoder = new TextDecoder();
-    reader = port.readable.getReader();
-    (async () => {
+  <script>
+    let port, reader, writer, readLoopCancel;
+
+    const logEl = document.getElementById('log');
+    const connectBtn = document.getElementById('connectBtn');
+    const disconnectBtn = document.getElementById('disconnectBtn');
+    const sendBtn = document.getElementById('sendBtn');
+    const interruptBtn = document.getElementById('interruptBtn');
+    const softResetBtn = document.getElementById('softResetBtn');
+    const jsonInput = document.getElementById('jsonInput');
+
+    function log(...args) {
+      logEl.value += args.join(' ') + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    async function connect() {
       try {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          if (value) log("RX: " + decoder.decode(value));
-        }
+        // Ask the user to select a serial port
+        port = await navigator.serial.requestPort({
+          // filters: [{ usbVendorId: 0x2E8A }] // Raspberry Pi Foundation (optional)
+        });
+        await port.open({ baudRate: 115200 });
+
+        // Setup writer
+        const encoder = new TextEncoder();
+        writer = port.writable.getWriter();
+
+        // Setup reader (line-based)
+        const decoder = new TextDecoderStream();
+        readLoopCancel = new AbortController();
+        port.readable.pipeTo(decoder.writable).catch(()=>{});
+        const inputStream = decoder.readable.pipeThrough(new TransformStream({
+          transform(chunk, controller) {
+            // Split by newlines
+            const lines = chunk.split(/\r?\n/);
+            for (const line of lines) controller.enqueue(line);
+          }
+        }));
+        reader = inputStream.getReader({ signal: readLoopCancel.signal });
+
+        // Start read loop
+        (async () => {
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              if (value !== undefined && value.length) log("<<", value);
+            }
+          } catch (e) {
+            if (e.name !== 'AbortError') log("Read error:", e.message);
+          }
+        })();
+
+        connectBtn.disabled = true;
+        disconnectBtn.disabled = false;
+        sendBtn.disabled = false;
+        interruptBtn.disabled = false;
+        softResetBtn.disabled = false;
+
+        log("✅ Connected");
       } catch (e) {
-        log("Read error: " + e.message);
+        log("Connect error:", e.message);
       }
-    })();
-
-    document.getElementById("btnConnect").disabled = true;
-    document.getElementById("btnDisconnect").disabled = false;
-  } catch (err) {
-    log("Open error: " + err);
-  }
-};
-
-document.getElementById('btnDisconnect').onclick = async () => {
-  try {
-    if (reader) {
-      await reader.cancel();
-      reader.releaseLock();
-      reader = null;
     }
-    if (port) {
-      await port.close();
-      port = null;
+
+    async function disconnect() {
+      try {
+        if (reader) { readLoopCancel?.abort(); try { await reader.cancel(); } catch {} reader = null; }
+        if (writer) { try { writer.releaseLock(); } catch {} writer = null; }
+        if (port) { try { await port.close(); } catch {} port = null; }
+      } finally {
+        connectBtn.disabled = false;
+        disconnectBtn.disabled = true;
+        sendBtn.disabled = true;
+        interruptBtn.disabled = true;
+        softResetBtn.disabled = true;
+        log("🔌 Disconnected");
+      }
     }
-    log("Port closed.");
-  } catch (err) {
-    log("Close error: " + err);
-  }
-  document.getElementById("btnConnect").disabled = false;
-  document.getElementById("btnDisconnect").disabled = true;
-};
-</script>
+
+    async function sendLine(str) {
+      if (!writer) return;
+      const data = new TextEncoder().encode(str + "\n");
+      await writer.write(data);
+      log(">>", str);
+    }
+
+    async function sendJSON() {
+      try {
+        const raw = jsonInput.value.trim();
+        // Basic validation
+        JSON.parse(raw);
+        await sendLine(raw); // newline-terminated JSON
+      } catch (e) {
+        log("JSON error:", e.message);
+      }
+    }
+
+    async function sendCtrlC() {
+      if (!writer) return;
+      const ctrlC = new Uint8Array([0x03]); // Ctrl-C
+      await writer.write(ctrlC);
+      log(">> [Ctrl-C]");
+    }
+
+    async function sendCtrlD() {
+      if (!writer) return;
+      const ctrlD = new Uint8Array([0x04]); // Ctrl-D (soft reboot in MicroPython REPL)
+      await writer.write(ctrlD);
+      log(">> [Ctrl-D soft reboot]");
+    }
+
+    connectBtn.addEventListener('click', connect);
+    disconnectBtn.addEventListener('click', disconnect);
+    sendBtn.addEventListener('click', sendJSON);
+    interruptBtn.addEventListener('click', sendCtrlC);
+    softResetBtn.addEventListener('click', sendCtrlD);
+
+    // Feature detection
+    if (!('serial' in navigator)) {
+      log("❌ This browser doesn't support Web Serial API. Use Chrome/Edge over HTTPS or localhost.");
+      connectBtn.disabled = true;
+    }
+  </script>
+</body>
 </html>
