@@ -19,16 +19,12 @@ let port, reader;
 const logEl = document.getElementById('console');
 const openBtn = document.getElementById('openPort');
 
-function log(msg){
+function log(msg) {
   logEl.textContent += msg + "\n";
   logEl.scrollTop = logEl.scrollHeight;
 }
 
-openBtn.addEventListener('click', async () => {
-  if (!("serial" in navigator)) {
-    alert("Your browser does not support Web Serial API (use Chrome/Edge/Opera).");
-    return;
-  }
+async function connect() {
   try {
     port = await navigator.serial.requestPort();
     await port.open({ baudRate: 115200 });
@@ -44,16 +40,42 @@ openBtn.addEventListener('click', async () => {
     }
   } catch (err) {
     log("Open error: " + err);
+    await disconnect();
+  }
+}
+
+async function disconnect() {
+  try {
+    if (reader) {
+      await reader.cancel();
+      reader.releaseLock();
+      reader = null;
+    }
+    if (port) {
+      await port.close();
+      port = null;
+    }
+    log("Port closed.");
+  } catch (err) {
+    log("Close error: " + err);
+  }
+}
+
+openBtn.addEventListener('click', async () => {
+  if (!("serial" in navigator)) {
+    alert("Your browser does not support Web Serial API (use Chrome/Edge/Opera).");
+    return;
+  }
+  if (port) {
+    await disconnect();
+  } else {
+    await connect();
   }
 });
 
 window.addEventListener('beforeunload', async () => {
   try {
-    if (reader) {
-      await reader.cancel();
-      reader.releaseLock();
-    }
-    if (port) await port.close();
+    await disconnect();
   } catch (err) {
     // ignore
   }
