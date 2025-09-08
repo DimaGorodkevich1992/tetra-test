@@ -1,0 +1,6 @@
+{
+  "device_name": "MyPicoDevice",
+  "baud": 115200,
+  "flags": { "debug": true, "safe_mode": false },
+  "threshold": 42
+}

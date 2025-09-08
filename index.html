@@ -68,14 +68,26 @@
         const decoder = new TextDecoderStream();
         readLoopCancel = new AbortController();
         port.readable.pipeTo(decoder.writable).catch(()=>{});
-        const inputStream = decoder.readable.pipeThrough(new TransformStream({
+      
+        let buffer = "";
+        const lineSplitter = new TransformStream({
           transform(chunk, controller) {
-            // Split by newlines
-            const lines = chunk.split(/\r?\n/);
-            for (const line of lines) controller.enqueue(line);
+            buffer += chunk;
+            let idx;
+            while ((idx = buffer.indexOf("\n")) >= 0) {
+              const line = buffer.slice(0, idx).replace(/\r$/, "");
+              if (line.length) controller.enqueue(line);
+              buffer = buffer.slice(idx + 1);
+            }
+          },
+          flush(controller) {
+            if (buffer.length) controller.enqueue(buffer);
           }
-        }));
-        reader = inputStream.getReader({ signal: readLoopCancel.signal });
+        });
+
+        port.readable.pipeTo(decoder.writable).catch(()=>{});
+        const inputStream = decoder.readable.pipeThrough(lineSplitter);
+        reader = inputStream.getReader({ signal: readLoopCancel.signal });s
 
         // Start read loop
         (async () => {
@@ -111,7 +123,7 @@
         connectBtn.disabled = false;
         disconnectBtn.disabled = true;
         sendBtn.disabled = true;
-        interruptBtn.disabled = true;
+        interruptBtn.disabled = true;/ Split by newlines
         softResetBtn.disabled = true;
         log("🔌 Disconnected");
       }
