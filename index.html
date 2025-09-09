@@ -5,67 +5,70 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Pico Serial Console</title>
   <style>
-    body { font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; max-width: 920px; }
+    body { font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; max-width: 880px; }
     h1 { margin: 0 0 12px; font-size: 20px; }
     .row { margin: 12px 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .row label { font-weight: 600; }
     button { padding: 8px 12px; cursor: pointer; }
-    input[type="text"] { flex: 1 1 520px; padding: 8px; }
+    input[type="text"] { flex: 1 1 460px; padding: 8px; }
     textarea { width: 100%; height: 280px; padding: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .hint { color: #666; font-size: 12px; }
-    .group { border: 1px solid #e5e5e5; border-radius: 8px; padding: 12px; }
-    .group h2 { font-size: 16px; margin: 0 0 8px; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px,1fr)); gap: 8px; }
-    .muted { opacity: .75; }
+    .spacer { flex: 1 1 auto; }
+    .group { border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
   </style>
 </head>
 <body>
   <h1>Web Serial → Pico</h1>
 
-  <div class="row">
+  <!-- Connect -->
+  <div class="row group">
     <button id="connectBtn">Connect</button>
     <button id="disconnectBtn" disabled>Disconnect</button>
-    <span class="hint">Use Chrome/Edge over HTTPS or http://localhost</span>
+    <span class="spacer"></span>
+    <span class="hint">Use Chrome/Edge over HTTPS or http://localhost. Close Thonny/serial monitors.</span>
   </div>
 
-  <div class="group">
-    <h2>Быстрые команды</h2>
-    <div class="grid">
-      <button data-cmd="ping">Ping</button>
-      <button data-cmd="get_config">Get config</button>
-      <button id="btnSetConfig">Set config (save)</button>
-      <button data-cmd="reset_config">Reset config</button>
-      <button id="btnListRoot">List dir “/”</button>
-      <button id="btnReadConfig">Read file “config.json”</button>
-      <button id="btnWriteTest">Write file “test.txt”</button>
-      <button id="btnDeleteTest">Delete “test.txt”</button>
-      <button data-cmd="reboot">Reboot</button>
-    </div>
-    <div class="hint muted" style="margin-top:8px">
-      Set/Read/Write/Delete подставляют пример JSON в поле ниже — можно отредактировать и нажать “Send JSON”.
-      Кнопки Ping/Get/Reset/Reboot отправляют команды сразу.
-    </div>
-  </div>
-
-  <div class="row">
+  <!-- Free JSON -->
+  <div class="row group">
     <label for="jsonInput">JSON to send:</label>
     <input id="jsonInput" type="text" value='{"cmd":"ping"}' />
     <button id="sendBtn" disabled>Send JSON</button>
   </div>
 
-  <div class="row">
+  <!-- Quick commands -->
+  <div class="row group" style="flex-direction: column; align-items: stretch; gap: 10px;">
+    <div class="row">
+      <strong>Quick commands:</strong>
+      <button id="pingBtn" disabled>ping</button>
+      <button id="getCfgBtn" disabled>get_config</button>
+      <button id="resetCfgBtn" disabled>reset_config</button>
+      <button id="rebootBtn" disabled>reboot</button>
+    </div>
+    <div class="row">
+      <label for="cfgInput">set_config payload (JSON):</label>
+      <input id="cfgInput" type="text" placeholder='e.g. {"midi_channel": 10, "midi_channel_all": false}' />
+      <button id="setCfgBtn" disabled>set_config</button>
+      <label style="margin-left:8px"><input type="checkbox" id="saveCfgChk"> save to flash</label>
+    </div>
+  </div>
+
+  <!-- REPL control -->
+  <div class="row group">
     <button id="interruptBtn" disabled>Send Ctrl-C (interrupt)</button>
     <button id="softResetBtn" disabled>Soft reboot (Ctrl-D)</button>
   </div>
 
-  <div class="row" style="flex-direction: column; align-items: stretch;">
+  <!-- Log -->
+  <div class="row group" style="flex-direction: column; align-items: stretch;">
     <label>Log:</label>
     <textarea id="log" readonly></textarea>
-    <div class="hint">Tips: закрой Thonny/любые сериал-мониторы; после connect нажми “Soft reboot” чтобы увидеть {"status":"ready"} от main.py</div>
+    <div class="hint">Tip: After connect you can press “Soft reboot” to see {"status":"ready"} from your firmware.</div>
   </div>
 
   <script>
     let port, reader, writer, readLoopCancel;
+    let reqId = 1;
+
     const logEl = document.getElementById('log');
     const connectBtn = document.getElementById('connectBtn');
     const disconnectBtn = document.getElementById('disconnectBtn');
@@ -73,6 +76,15 @@
     const interruptBtn = document.getElementById('interruptBtn');
     const softResetBtn = document.getElementById('softResetBtn');
     const jsonInput = document.getElementById('jsonInput');
+
+    const pingBtn = document.getElementById('pingBtn');
+    const getCfgBtn = document.getElementById('getCfgBtn');
+    const resetCfgBtn = document.getElementById('resetCfgBtn');
+    const rebootBtn = document.getElementById('rebootBtn');
+
+    const setCfgBtn = document.getElementById('setCfgBtn');
+    const cfgInput = document.getElementById('cfgInput');
+    const saveCfgChk = document.getElementById('saveCfgChk');
 
     function log(...args) {
       const line = args.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
@@ -84,9 +96,10 @@
     async function connect() {
       try {
         if (!('serial' in navigator)) {
-          log("❌ Web Serial API недоступен. Используй Chrome/Edge по HTTPS или localhost.");
+          log("❌ This browser doesn't support Web Serial API. Use Chrome/Edge over HTTPS or localhost.");
           return;
         }
+
         port = await navigator.serial.requestPort({});
         await port.open({ baudRate: 115200 });
         log("Port opened.");
@@ -130,16 +143,25 @@
           }
         })();
 
-        connectBtn.disabled = true;
-        disconnectBtn.disabled = false;
-        sendBtn.disabled = false;
-        interruptBtn.disabled = false;
-        softResetBtn.disabled = false;
-
+        // enable UI
+        setEnabled(true);
         log("✅ Connected");
       } catch (e) {
         log("Connect error:", e.message);
       }
+    }
+
+    function setEnabled(connected) {
+      connectBtn.disabled = connected;
+      disconnectBtn.disabled = !connected;
+      sendBtn.disabled = !connected;
+      interruptBtn.disabled = !connected;
+      softResetBtn.disabled = !connected;
+      pingBtn.disabled = !connected;
+      getCfgBtn.disabled = !connected;
+      resetCfgBtn.disabled = !connected;
+      rebootBtn.disabled = !connected;
+      setCfgBtn.disabled = !connected;
     }
 
     async function disconnect() {
@@ -148,11 +170,7 @@
         if (writer) { try { writer.releaseLock(); } catch {} writer = null; }
         if (port)   { try { await port.close(); } catch {} port = null; }
       } finally {
-        connectBtn.disabled = false;
-        disconnectBtn.disabled = true;
-        sendBtn.disabled = true;
-        interruptBtn.disabled = true;
-        softResetBtn.disabled = true;
+        setEnabled(false);
         log("🔌 Disconnected");
       }
     }
@@ -164,6 +182,7 @@
       log(">>", str);
     }
 
+    // --- Free JSON ---
     async function sendJSON() {
       try {
         const raw = jsonInput.value.trim();
@@ -174,72 +193,70 @@
       }
     }
 
-    async function sendCtrlC() {
-      if (!writer) return;
-      const ctrlC = new Uint8Array([0x03]);
-      await writer.write(ctrlC);
-      log(">> [Ctrl-C]");
+    // --- Quick commands ---
+    function nextId() { return reqId++; }
+
+    async function sendCmd(cmdObj) {
+      await sendLine(JSON.stringify(cmdObj));
     }
 
+    // ping
+    async function doPing() {
+      await sendCmd({ id: nextId(), cmd: "ping" });
+    }
+    // get_config
+    async function doGetConfig() {
+      await sendCmd({ id: nextId(), cmd: "get_config" });
+    }
+    // set_config (NO default payload here)
+    async function doSetConfig() {
+      const txt = cfgInput.value.trim();
+      if (!txt) { log("set_config: payload is empty"); return; }
+      try {
+        const patch = JSON.parse(txt);
+        const save = !!saveCfgChk.checked;
+        await sendCmd({ id: nextId(), cmd: "set_config", data: patch, save });
+      } catch (e) {
+        log("set_config JSON error:", e.message);
+      }
+    }
+    // reset_config
+    async function doResetConfig() {
+      await sendCmd({ id: nextId(), cmd: "reset_config" });
+    }
+    // reboot
+    async function doReboot() {
+      await sendCmd({ id: nextId(), cmd: "reboot" });
+    }
+
+    // --- REPL controls ---
+    async function sendCtrlC() {
+      if (!writer) return;
+      await writer.write(new Uint8Array([0x03]));
+      log(">> [Ctrl-C]");
+    }
     async function sendCtrlD() {
       if (!writer) return;
-      const ctrlD = new Uint8Array([0x04]);
-      await writer.write(ctrlD);
+      await writer.write(new Uint8Array([0x04]));
       log(">> [Ctrl-D soft reboot]");
     }
 
-    // —— Быстрые кнопки ——
-
-    // команды, которые отправляются сразу без редактирования
-    document.querySelectorAll('button[data-cmd]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const cmd = btn.getAttribute('data-cmd');
-        const pkt = { cmd, id: Date.now() & 0xffff };
-        sendLine(JSON.stringify(pkt));
-      });
-    });
-
-    // подставить примеры в инпут
-    document.getElementById('btnSetConfig').addEventListener('click', () => {
-      jsonInput.value = JSON.stringify({
-        id: 2,
-        cmd: "set_config",
-        save: true,
-        data: {
-          device_name: "MyPicoDevice",
-          threshold: 77,
-          flags: { debug: true, safe_mode: false }
-        }
-      });
-    });
-
-    document.getElementById('btnListRoot').addEventListener('click', () => {
-      jsonInput.value = JSON.stringify({ id: 3, cmd: "list_dir", path: "/" });
-    });
-
-    document.getElementById('btnReadConfig').addEventListener('click', () => {
-      jsonInput.value = JSON.stringify({ id: 4, cmd: "get_file", path: "config.json" });
-    });
-
-    document.getElementById('btnWriteTest').addEventListener('click', () => {
-      // "Hello Pico\n" в base64
-      const b64 = btoa("Hello Pico\n");
-      jsonInput.value = JSON.stringify({ id: 5, cmd: "put_file", path: "test.txt", b64 });
-    });
-
-    document.getElementById('btnDeleteTest').addEventListener('click', () => {
-      jsonInput.value = JSON.stringify({ id: 6, cmd: "del_file", path: "test.txt" });
-    });
-
-    // базовые кнопки
+    // bindings
     connectBtn.addEventListener('click', connect);
     disconnectBtn.addEventListener('click', disconnect);
     sendBtn.addEventListener('click', sendJSON);
+
+    pingBtn.addEventListener('click', doPing);
+    getCfgBtn.addEventListener('click', doGetConfig);
+    setCfgBtn.addEventListener('click', doSetConfig);
+    resetCfgBtn.addEventListener('click', doResetConfig);
+    rebootBtn.addEventListener('click', doReboot);
+
     interruptBtn.addEventListener('click', sendCtrlC);
     softResetBtn.addEventListener('click', sendCtrlD);
 
     if (!('serial' in navigator)) {
-      log("❌ Web Serial API недоступен. Используй Chrome/Edge по HTTPS или localhost.");
+      log("❌ This browser doesn't support Web Serial API. Use Chrome/Edge over HTTPS or localhost.");
       connectBtn.disabled = true;
     }
   </script>
