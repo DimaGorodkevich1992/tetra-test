@@ -52,6 +52,12 @@
     </div>
   </div>
 
+  <div class="row" style="flex-direction: column; align-items: stretch;">
+    <label>Config:</label>
+    <pre id="configView" style="background:#f8f8f8; border:1px solid #ccc; padding:8px; 
+      white-space:pre-wrap; max-height:300px; overflow:auto; font-family:monospace; font-size:13px;"></pre>
+  </div>
+
   <!-- REPL control -->
   <div class="row group">
     <button id="interruptBtn" disabled>Send Ctrl-C (interrupt)</button>
@@ -136,7 +142,21 @@
             while (true) {
               const { value, done } = await reader.read();
               if (done) break;
-              if (value !== undefined && value.length) log("<<", value);
+              if (value !== undefined && value.length) {
+                log("<<", value);
+
+                try {
+                  const msg = JSON.parse(value);
+
+                  // если это ответ на get_config или set_config → показываем красиво
+                  if (msg.ok === "config" || msg.ok === "saved" || msg.ok === "updated_in_ram" || msg.ok === "reset") {
+                    const cfgEl = document.getElementById("configView");
+                    cfgEl.textContent = JSON.stringify(msg.data, null, 2);
+                  }
+                } catch (e) {
+                  // не JSON, пропускаем
+                }
+              }
             }
           } catch (e) {
             if (e.name !== 'AbortError') log("Read error:", e.message);
