@@ -151,7 +151,19 @@
                   // если это ответ на get_config или set_config → показываем красиво
                   if (msg.ok === "config" || msg.ok === "saved" || msg.ok === "updated_in_ram" || msg.ok === "reset") {
                     const cfgEl = document.getElementById("configView");
-                    cfgEl.textContent = JSON.stringify(msg.data, null, 2);
+                    const cfg = msg.data;
+
+                    function prettyCompact(arr) {
+                      return arr.map(o => JSON.stringify(o)).join(",\n");
+                    }
+
+                    let text = "";
+                    if (cfg.uart)   text += "UART: "   + JSON.stringify(cfg.uart, null, 2) + "\n\n";
+                    if (cfg.midi)   text += "MIDI: "   + JSON.stringify(cfg.midi, null, 2) + "\n\n";
+                    if (cfg.timing) text += "TIMING: " + JSON.stringify(cfg.timing, null, 2) + "\n\n";
+                    if (cfg.outs)   text += "OUTS:\n"  + prettyCompact(cfg.outs);
+
+                    cfgEl.textContent = text;
                   }
                 } catch (e) {
                   // не JSON, пропускаем
@@ -182,6 +194,14 @@
       resetCfgBtn.disabled = !connected;
       rebootBtn.disabled = !connected;
       setCfgBtn.disabled = !connected;
+    }
+
+    function prettyCompact(obj) {
+      if (Array.isArray(obj)) {
+        return obj.map(o => JSON.stringify(o)).join(",\n");
+      } else {
+        return JSON.stringify(obj, null, 2);
+      }
     }
 
     async function disconnect() {
